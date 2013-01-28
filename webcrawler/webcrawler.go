@@ -2,6 +2,9 @@ package main
 
 import (
     "fmt"
+    "math/rand"
+    "sync"
+    "time"
 )
 
 type Fetcher interface {
@@ -13,26 +16,49 @@ type Fetcher interface {
 // Crawl uses fetcher to recursively crawl
 // pages starting with url, to a maximum of depth.
 func Crawl(url string, depth int, fetcher Fetcher) {
-    // TODO: Fetch URLs in parallel.
-    // TODO: Don't fetch the same URL twice.
-    // This implementation doesn't do either:
-    if depth <= 0 {
-        return
+    // Fetch URLs in parallel.
+    // Don't fetch the same URL twice.
+    visited := struct {
+        m   map[string]bool
+        sync.Mutex
+    }{m: make(map[string]bool)}
+    var crawl func(url string, depth int)
+    crawl = func(url string, depth int) {
+        if depth <= 0 {
+            return
+        }
+        visited.Lock()
+        if visited.m[url] {
+            fmt.Println("skipping", url)
+            visited.Unlock()
+            return
+        }
+        visited.m[url] = true
+        visited.Unlock()
+        body, urls, err := fetcher.Fetch(url)
+        if err != nil {
+            fmt.Println(err)
+            return
+        }
+        fmt.Printf("found: %s %q\n", url, body)
+        done := make(chan bool)
+        for _, u := range urls {
+            go func(url string) {
+                crawl(url, depth-1)
+                done <- true
+            }(u)
+        }
+        for _ = range urls {
+            <-done
+        }
     }
-    body, urls, err := fetcher.Fetch(url)
-    if err != nil {
-        fmt.Println(err)
-        return
-    }
-    fmt.Printf("found: %s %q\n", url, body)
-    for _, u := range urls {
-        Crawl(u, depth-1, fetcher)
-    }
-    return
+    crawl(url, depth)
 }
 
 func main() {
+    s := time.Now()
     Crawl("http://golang.org/", 4, fetcher)
+    fmt.Println(time.Now().Sub(s))
 }
 
 // fakeFetcher is Fetcher that returns canned results.
@@ -45,6 +71,7 @@ type fakeResult struct {
 
 func (f *fakeFetcher) Fetch(url string) (string, []string, error) {
     if res, ok := (*f)[url]; ok {
+        time.Sleep(time.Duration(rand.Intn(200)) * time.Millisecond)
         return res.body, res.urls, nil
     }
     return "", nil, fmt.Errorf("not found: %s", url)
